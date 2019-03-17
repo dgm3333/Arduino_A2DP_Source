@@ -16,16 +16,26 @@
  *    
  *    The example implements an event loop triggered by a periodic "heart beat" timer and events from Bluetooth protocol stack callback functions.
  *    
- *    For current stage, the supported audio codec in ESP32 A2DP is SBC. 
+ *    For current stage, the supported audio codec in ESP32 A2DP is SBC (SubBand Coding). 
+ *    SBC specification is in Appendix B (page 50) of the document A2DP_Spec_V1_0 (can be found with search engine, although the original is behind the Bluetooth firewall)
+ *    
  *    SBC audio stream is encoded from PCM data normally formatted as 44.1kHz sampling rate, two-channel 16-bit sample data. 
  *    Other SBC configurations can be supported but there is a need for additional modifications to the protocol stack.
   */
 
+
+
 // Code tested and works on WEMOS Wifi and Bluetooth Battery (actually using HiGrow hardware)
+// The ESP32 is visible as ESP_A2DP_SRC - Would be nice if it was possible to send from ESP32 to android phone, but AFAICT the android stack doesn't implement the sink protocol
 // Change this to the name of your bluetooth speaker/headset
-#define BT_SPEAKER "BNX-60"
+#define  BT_SINK "BNX-60"
+#define BT_DEVICE_NAME "ESP_A2DP_SRC"
 
-
+// samples from the mod archive: https://modarchive.org/index.php?request=view_by_moduleid&query=42146
+#include "enigma.h"
+#define CURMOD enigma_mod
+//#include "one_channel_moog_mod.h"
+//#define CURMOD one_channel_moog_mod   //enigma_mod
 
 
 #include <stdio.h>
@@ -91,8 +101,10 @@ static void bt_av_hdl_stack_evt(uint16_t event, void *p_param);
 static void bt_app_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
 
 /// callback function for A2DP source audio data stream
+static int32_t bt_app_a2d_data_cb_static(uint8_t *data, int32_t len);
+static int32_t bt_app_a2d_data_cb_increase(uint8_t *data, int32_t len);
+static int32_t bt_app_a2d_data_cb_sine(uint8_t *data, int32_t len);
 static int32_t bt_app_a2d_data_cb(uint8_t *data, int32_t len);
-static int32_t bt_app_a2d_data_cbv2(uint8_t *data, int32_t len);    // Added to modify sound
 
 static void a2d_app_heart_beat(void *arg);
 
@@ -114,6 +126,9 @@ static int s_connecting_intv = 0;
 static uint32_t s_pkt_cnt = 0;
 
 static TimerHandle_t s_tmr;
+
+
+static int sine_phase;
 
 static char *bda2str(esp_bd_addr_t bda, char *str, size_t size)
 {
@@ -246,10 +261,11 @@ static void filter_inquiry_scan_result(esp_bt_gap_cb_param_t *param)
         case ESP_BT_GAP_DEV_PROP_COD:
             cod = *(uint32_t *)(p->val);
             Serial.printf("ESP_LOGI: BT_AV_TAG: --Class of Device: 0x%x\n", cod);
+            // NB enumeration is listed in 
             break;
         case ESP_BT_GAP_DEV_PROP_RSSI:
             rssi = *(int8_t *)(p->val);
-            Serial.printf("ESP_LOGI: BT_AV_TAG: --RSSI: %d\n", rssi);
+            Serial.printf("ESP_LOGI: BT_AV_TAG: --RSSI (Received signal strength indication): %d\n", rssi);
             break;
         case ESP_BT_GAP_DEV_PROP_EIR:
             eir = (uint8_t *)(p->val);
@@ -266,10 +282,10 @@ static void filter_inquiry_scan_result(esp_bt_gap_cb_param_t *param)
         return;
     }
 
-    /* search for device named BT_SPEAKER in its extended inqury response */
+    /* search for device named  BT_SINK in its extended inqury response */
     if (eir) {
         get_name_from_eir(eir, s_peer_bdname, NULL);
-        if (strcmp((char *)s_peer_bdname, BT_SPEAKER) != 0) {
+        if (strcmp((char *)s_peer_bdname,  BT_SINK) != 0) {
             return;
         }
 
@@ -293,8 +309,8 @@ void bt_app_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
         if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STOPPED) {
             if (s_a2d_state == APP_AV_STATE_DISCOVERED) {
                 s_a2d_state = APP_AV_STATE_CONNECTING;
-                Serial.printf("ESP_LOGI: BT_AV_TAG: Device discovery stopped.\n");
-                Serial.printf("ESP_LOGI: BT_AV_TAG: a2dp connecting to peer: %s\n", s_peer_bdname);
+//                Serial.printf("ESP_LOGI: BT_AV_TAG: Device discovery stopped.\n");
+                Serial.printf("ESP_LOGI: BT_AV_TAG: Device discovery stopped: a2dp connecting to peer: %s\n", s_peer_bdname);
                 esp_a2d_source_connect(s_peer_bda);
             } else {
                 // not discovered, continue to discover
@@ -363,7 +379,7 @@ static void bt_av_hdl_stack_evt(uint16_t event, void *p_param)
     switch (event) {
     case BT_APP_EVT_STACK_UP: {
         /* set up device name */
-        char *dev_name = "ESP_A2DP_SRC";
+        char *dev_name = BT_DEVICE_NAME;
         esp_bt_dev_set_device_name(dev_name);
 
         /* register GAP callback function */
@@ -371,8 +387,10 @@ static void bt_av_hdl_stack_evt(uint16_t event, void *p_param)
 
         /* initialize A2DP source */
         esp_a2d_register_callback(&bt_app_a2d_cb);
-//        esp_a2d_source_register_data_callback(bt_app_a2d_data_cb);
-        esp_a2d_source_register_data_callback(bt_app_a2d_data_cbv2);    // modified source
+//        esp_a2d_source_register_data_callback(bt_app_a2d_data_cb_static);           // generates static/white noise
+//        static int32_t bt_app_a2d_data_cb_increase(uint8_t *data, int32_t len);     // generates linear increasing noise
+//        static int32_t bt_app_a2d_data_cb_sine(uint8_t *data, int32_t len);         // generates sine wave noise
+        esp_a2d_source_register_data_callback(bt_app_a2d_data_cb);
         esp_a2d_source_init();
 
         /* set discoverable and connectable mode */
@@ -403,23 +421,6 @@ static void bt_app_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
     bt_app_work_dispatch(bt_app_av_sm_hdlr, event, param, sizeof(esp_a2d_cb_param_t), NULL);
 }
 
-static int32_t bt_app_a2d_data_cb(uint8_t *data, int32_t len)
-{
-    // This code generates random numbers to provide static / white noise for forwarding to the output
-    if (len < 0 || data == NULL) {
-        return 0;
-    }
-
-    // generate random sequence
-    int val = rand() % (1 << 16);
-    for (int i = 0; i < (len >> 1); i++) {
-        data[(i << 1)] = val & 0xff;
-        data[(i << 1) + 1] = (val >> 8) & 0xff;
-    }
-
-    return len;
-}
-
 static void a2d_app_heart_beat(void *arg)
 {
     bt_app_work_dispatch(bt_app_av_sm_hdlr, BT_APP_HEART_BEAT_EVT, NULL, 0, NULL);
@@ -431,6 +432,7 @@ static void bt_app_av_sm_hdlr(uint16_t event, void *param)
     switch (s_a2d_state) {
     case APP_AV_STATE_DISCOVERING:
         Serial.println("APP_AV_STATE_DISCOVERING");
+        break;
     case APP_AV_STATE_DISCOVERED:
         Serial.println("APP_AV_STATE_DISCOVERED");
         break;
@@ -466,8 +468,8 @@ static void bt_app_av_state_unconnected(uint16_t event, void *param)
         break;
     case BT_APP_HEART_BEAT_EVT: {
         uint8_t *p = s_peer_bda;
-        Serial.printf("ESP_LOGI: BT_AV_TAG: a2dp connecting to peer: %02x:%02x:%02x:%02x:%02x:%02x\n",
-                 p[0], p[1], p[2], p[3], p[4], p[5]);
+        Serial.printf("ESP_LOGI: BT_AV_TAG: Heartbeat Event: a2dp most recent peer connection: %s @ %02x:%02x:%02x:%02x:%02x:%02x\n",
+                 s_peer_bdname, p[0], p[1], p[2], p[3], p[4], p[5]);
         esp_a2d_source_connect(s_peer_bda);
         s_a2d_state = APP_AV_STATE_CONNECTING;
         s_connecting_intv = 0;
@@ -547,7 +549,7 @@ static void bt_app_av_media_proc(uint16_t event, void *param)
         break;
     }
     case APP_AV_MEDIA_STATE_STARTED: {
-        if (event == BT_APP_HEART_BEAT_EVT) {
+/*        if (event == BT_APP_HEART_BEAT_EVT) {
             if (++s_intv_cnt >= 10) {
                 Serial.printf("ESP_LOGI: BT_AV_TAG: a2dp media stopping...\n");
                 esp_a2d_media_ctrl(ESP_A2D_MEDIA_CTRL_STOP);
@@ -555,7 +557,7 @@ static void bt_app_av_media_proc(uint16_t event, void *param)
                 s_intv_cnt = 0;
             }
         }
-        break;
+*/        break;
     }
     case APP_AV_MEDIA_STATE_STOPPING: {
         if (event == ESP_A2D_MEDIA_CTRL_ACK_EVT) {
@@ -636,21 +638,113 @@ static void bt_app_av_state_disconnecting(uint16_t event, void *param)
 
 
 
-static int32_t bt_app_a2d_data_cbv2(uint8_t *data, int32_t len)
+static int32_t bt_app_a2d_data_cb_static(uint8_t *data, int32_t len)
 {
-    // This code generates random numbers to provide static / white noise for forwarding to the output
+    // Generates random numbers to provide static / white noise for forwarding to the output
     if (len < 0 || data == NULL) {
+        Serial.printf("entered func: %s but no data to load\n", __func__);
         return 0;
     }
 
     // generate random sequence
-    int val = rand() % (1 << 16);
-    for (int i = 0; i < (len >> 1); i++) {
-        data[(i << 1)] = val & 0xff;
-        data[(i << 1) + 1] = (val >> 8) & 0xff;
+    int val = rand() % (1 << 16);                   // restrict the number to a 16bit integer (ie max of 65536)
+    for (int i = 0; i < (len >> 1); i++) {          // len>>1==len/2 : data format is uint8_t, but SBC wants uint16_t, so you run the process once for every two bytes
+        data[(i << 1)] = val & 0xff;                // use bit mask to retain only the low byte     // i<<1==i*2 : ie step 2 bytes for every value
+        data[(i << 1) + 1] = (val >> 8) & 0xff;     // bit shift to move the upper byte to the lower, then bit mask to retain only this part (ie mask out the old low byte)
     }
 
     return len;
 }
 
+
+uint16_t SBCVal=0;
+static int32_t bt_app_a2d_data_cb_increase(uint8_t *data, int32_t len)
+{
+    // generates increasing value for forwarding to the output
+    if (len < 0 || data == NULL) {
+        Serial.printf("entered func: %s but no data to load\n", __func__);
+        return 0;
+    }
+
+    for (int i = 0; i < (len >> 1); i++) {          // len>>1==len/2 : data format is uint8_t, but SBC wants uint16_t, so you run the process once for every two bytes
+        data[(i << 1)] = SBCVal & 0xff;                // use bit mask to retain only the low byte     // i<<1==i*2 : ie step 2 bytes for every value
+        data[(i << 1) + 1] = (SBCVal >> 8) & 0xff;     // bit shift to move the upper byte to the lower, then bit mask to retain only this part (ie mask out the old low byte)
+        SBCVal = (SBCVal +1) % (1 << 16);       // increment the value to continue the sequence (max val 65536)
+    }
+    
+    return len;
+}
+
+
+static const int16_t sine_int16[] = {
+  32768,     34825,     36875,     38908,     40917,     42894,     44830,     46720,     48554,     50325,
+  52028,     53654,     55199,     56654,     58015,     59277,     60434,     61482,     62416,     63234,
+  63931,     64506,     64955,     65277,     65470,     65535,     65470,     65277,     64955,     64506,
+  63931,     63234,     62416,     61482,     60434,     59277,     58015,     56654,     55199,     53654,
+  52028,     50325,     48554,     46720,     44830,     42894,     40917,     38908,     36875,     34825,
+  32768,     30711,     28661,     26628,     24619,     22642,     20706,     18816,     16982,     15211,
+  13508,     11882,     10337,      8882,      7521,      6259,      5102,      4054,      3120,      2302,
+   1605,      1030,       581,       259,        66,         1,        66,       259,       581,      1030,
+   1605,      2302,      3120,      4054,      5102,      6259,      7521,      8882,     10337,     11882,
+  13508,     15211,     16982,     18816,     20706,     22642,     24619,     26628,     28661,     30711,
+};
+int sineTableSize = sizeof(sine_int16);
+static int32_t bt_app_a2d_data_cb_sine(uint8_t *data, int32_t len)
+{
+    // generates increasing value for forwarding to the output
+    if (len < 0 || data == NULL) {
+        Serial.printf("entered func: %s but no data to load\n", __func__);
+        return 0;
+    }
+
+    // generate sine wave
+    for (int i = 0; i < (len >> 1); i++) {
+        data[(i << 1)] = sine_int16[sine_phase];
+        data[(i << 1) + 1] = sine_int16[sine_phase];
+        sine_phase = (sine_phase +1) % sineTableSize;
+    }
+
+    return len;
+}
+
+
+
+uint32_t modLoc=100;                  // Just a test, so guess a place to start which is hopefully past the header
+uint32_t modSize=sizeof(CURMOD);
+static int32_t bt_app_a2d_data_cb(uint8_t *data, int32_t len)
+{
+    // plays a mod from program memory
+    if (len < 0 || data == NULL) {
+        Serial.printf("entered func: %s but no data to load\n", __func__);
+        return 0;
+    }
+
+    // use longer print statements only for testing: if you print too much it slows the Task and the watchdog may trigger
+    Serial.printf("%d -> %d\n", modLoc, len);
+//    Serial.printf("func: %s: Loaded data from %d to ", __func__, modLoc);
+
+    int cycle=0;
+    for (int i = 0; i < (len >> 1); i++) {
+        data[(i << 1)] = CURMOD[modLoc];
+        data[(i << 1) + 1] = CURMOD[modLoc+1];
+
+        cycle++;
+        if (cycle == 20) {
+          modLoc = (modLoc + 2) % modSize;
+          if (modLoc < 100) modLoc=100;
+          cycle=0;
+        }
+
+
+    }
+//    Serial.printf("to %d bytes of file (total size: %d)\n", modLoc, modSize);
+
+    return len;
+}
+
+
+
+  //        data[(i << 1) + 1] = 0x00;   // for 8bit data will have to be padded out
+  //        data[(i << 1)] = CURMOD[i] & 0xff;
+  //        data[(i << 1) + 1] = (CURMOD[i+1] >> 8) & 0xff;     // bit shift to move the upper byte to the lower, then bit mask to retain only this part (ie mask out the old low byte)
 
