@@ -4,15 +4,15 @@ https://github.com/espressif/esp-idf/tree/master/examples/bluetooth/a2dp_source
 The following link is another modification of the espressif source (which I found after uploading this):
 https://github.com/markingle/a2dp_source
 <p>
-I have found the esp-idf can be slow and/or require multiple reboot of ESP and/or bt headset before it will pair, so I may also try the Blue Kitchen btstack https://github.com/bluekitchen/btstack which has a port for ESP-32 and rumour has it :-p might be more stable...
-<p>
+
 Ideally this could be merged with a more complete library which includes decoding of other codecs, etc
 <p><p>
 
-As it stands the code can connect to my BNX-60 bluetooth headset and play white noise or one of a couple of other patterns as per the original example, but playing from a proper audio file isn't implemented...
+As it stands the code can often (see below) connect to my BNX-60 bluetooth headset and play white noise or one of a couple of other patterns as per the original example, but playing a proper audio file isn't yet implemented...
 <p><p><p>
 
-
+Unfortunately I have found this can require multiple reboots of the ESP32 and/or BT headset before it will pair (although it seems stable once it does), so I may also try the Blue Kitchen btstack https://github.com/bluekitchen/btstack which has a port for ESP-32 and rumour has it might be better...
+<p>
 
 BTW in case it's helpful the following script can be run in Microsoft Word to convert binary files (such as mods or wav files) into text format for use with progmem if using eg ESP8622Audio library
 https://github.com/earlephilhower/ESP8266Audio
