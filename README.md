@@ -4,6 +4,8 @@ https://github.com/espressif/esp-idf/tree/master/examples/bluetooth/a2dp_source
 The following link is another modification of the espressif source (which I found after uploading this):
 https://github.com/markingle/a2dp_source
 <p>
+I have found the esp-idf can be slow and/or require multiple reboot of ESP and/or bt headset before it will pair, so I may also try the Blue Kitchen btstack https://github.com/bluekitchen/btstack which has a port for ESP-32 and rumour has it :-p might be more stable...
+<p>
 Ideally this could be merged with a more complete library which includes decoding of other codecs, etc
 <p><p>
 
